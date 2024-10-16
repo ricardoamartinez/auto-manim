@@ -1,0 +1,12 @@
+# This file is used internally by FFMPEG.
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/2800618182_731832983_223132457.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/623158910_49249190_2841744241.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/623158910_2916570115_2063913048.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/1030944025_2555255015_611190812.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_1408169121_1407430715.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_1853509115_1126601233.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_140784893_2999126265.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_1853509115_3994873383.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_1361531926_155178515.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_3579496180_2831233440.mp4'
+file 'file:C:/Users/Ricardo/Downloads/auto-manim/pdf-to-manim/manim_output/scenes/videos/generated_manim_scenes/720p30/partial_movie_files/CscgsAndTheirRoleInNavigationAndPlaceFieldRemapping/3549095886_2264327378_1058635310.mp4'

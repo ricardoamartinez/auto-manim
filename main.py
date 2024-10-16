@@ -37,6 +37,18 @@ logging.basicConfig(
 logger = logging.getLogger("rich")
 
 # -----------------------------
+# Model Configuration
+# -----------------------------
+# Define global variables for model parameters
+MODEL_NAME = "gpt-4o-mini"
+MAX_TOKENS = 6000
+TEMPERATURE = 0.7
+MAX_CHUNK_SIZE = 12000  # Maximum chunk size based on API's max input size (in characters)
+
+# Global Rate Limiter
+GLOBAL_LIMITER = AsyncLimiter(100, 60)  # 100 requests per 60 seconds
+
+# -----------------------------
 # PDFExtractor Class
 # -----------------------------
 class PDFExtractor:
@@ -84,20 +96,20 @@ class PDFExtractor:
 
 
 # -----------------------------
-# ModelLayer Class using OpenAI GPT-4o
+# ModelLayer Class
 # -----------------------------
 class ModelLayer:
     """
-    Represents a single model layer that interacts with the OpenAI GPT-4o API asynchronously.
+    Represents a single model layer that interacts with the OpenAI GPT-4 API asynchronously.
     """
 
     def __init__(
         self,
         prompt_template: str,
-        model: str = "gpt-4o-mini",
-        max_tokens: int = 8000,
-        temperature: float = 0.7,
-        global_limiter: AsyncLimiter = AsyncLimiter(100, 60),  # 100 requests per 60 seconds
+        model: str = MODEL_NAME,
+        max_tokens: int = MAX_TOKENS,
+        temperature: float = TEMPERATURE,
+        global_limiter: AsyncLimiter = GLOBAL_LIMITER,
     ):
         """
         Initializes the ModelLayer.
@@ -251,7 +263,7 @@ class ModelPipeline:
 # -----------------------------
 # Utility Functions
 # -----------------------------
-def split_text(text: str, max_length: int) -> List[str]:
+def split_text(text: str, max_length: int = MAX_CHUNK_SIZE) -> List[str]:
     """
     Splits the text into chunks not exceeding max_length characters.
 
@@ -328,92 +340,6 @@ def monitor_gpu_usage():
         time.sleep(5)  # Update every 5 seconds
 
 
-async def run_manim_async(scene_names, python_path, output_dir):
-    """
-    Asynchronously renders Manim scenes.
-
-    Args:
-        scene_names (List[str]): List of scene class names to render.
-        python_path (str): Path to the Python executable.
-        output_dir (str): Directory where the final video will be saved.
-
-    Returns:
-        List[str]: Successfully rendered scene names.
-    """
-    successful_scenes = []
-
-    cuda_available = torch.cuda.is_available()
-    logger.info(f"CUDA is {'available' if cuda_available else 'not available'}")
-    if cuda_available:
-        logger.info(f"CUDA Device: {torch.cuda.get_device_name(0)}")
-
-    os.environ['CUDA_DEVICE'] = '0'
-
-    cpu_count = psutil.cpu_count(logical=False)
-    max_workers = max(1, int(cpu_count * 0.7))
-    logger.info(f"Using {max_workers} workers for rendering")
-
-    async def render_scene(queue):
-        while True:
-            scene = await queue.get()
-            try:
-                for attempt in range(3):  # Try up to 3 times
-                    try:
-                        command = (
-                            f"{python_path} -m manim -qm --format=mp4 --media_dir ./manim_output/scenes "
-                            f"--renderer=opengl --resolution=1280,720 generated_manim_scenes.py {scene}"
-                        )
-                        logger.debug(f"Executing command: {command}")
-                        process = await asyncio.create_subprocess_shell(
-                            command,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
-                            env={**os.environ, 'CUDA_VISIBLE_DEVICES': '0', 'MANIM_USE_OPENGL_RENDERER': '1'}
-                        )
-                        stdout, stderr = await process.communicate()
-                        if process.returncode == 0:
-                            logger.info(f"Manim command completed successfully for {scene}")
-                            successful_scenes.append(scene)
-                            break
-                        else:
-                            stderr_decoded = stderr.decode()
-                            if "PermissionError: [WinError 32]" in stderr_decoded:
-                                logger.warning(f"Permission error for {scene}. Retrying... (Attempt {attempt + 1})")
-                                await asyncio.sleep(0.1)  # Wait for 0.1 seconds before retrying
-                            else:
-                                logger.error(f"Error running Manim for scene {scene}: {stderr_decoded}")
-                                break
-                    except Exception as e:
-                        logger.error(f"Exception occurred while rendering {scene}: {str(e)}")
-                        break
-                else:
-                    logger.error(f"Failed to render {scene} after 3 attempts")
-            finally:
-                queue.task_done()
-
-    queue = Queue()
-    for scene in scene_names:
-        await queue.put(scene)
-
-    workers = [asyncio.create_task(render_scene(queue)) for _ in range(max_workers)]
-
-    with tqdm(total=len(scene_names), desc="Generating Manim scenes", unit="scene") as pbar:
-        while not queue.empty():
-            await asyncio.sleep(0.1)
-            completed = len(scene_names) - queue.qsize()
-            pbar.n = completed
-            pbar.refresh()
-
-    await queue.join()
-
-    for worker in workers:
-        worker.cancel()
-
-    await asyncio.gather(*workers, return_exceptions=True)
-
-    return successful_scenes
-
-
 def cleanup_temp_files():
     temp_dir = "./temp_videos/Tex"
     if os.path.exists(temp_dir):
@@ -424,6 +350,45 @@ def cleanup_temp_files():
                     os.unlink(file_path)
             except Exception as e:
                 logger.warning(f"Error deleting file {file_path}: {e}")
+
+
+def update_scene_in_generated_file(scene_name, new_code):
+    with open('generated_manim_scenes.py', 'r') as file:
+        content = file.read()
+
+    pattern = rf"class {re.escape(scene_name)}\(Scene\):.*?(?=\n\n|$)"
+    updated_content = re.sub(pattern, new_code, content, flags=re.DOTALL)
+
+    with open('generated_manim_scenes.py', 'w') as file:
+        file.write(updated_content)
+
+
+async def regenerate_scene_code(prompt_data, full_script_content):
+    """
+    Regenerates the Manim code for a specific scene using the original prompt.
+
+    Args:
+        prompt_data (Dict[str, str]): Data used in the original prompt for code generation.
+        full_script_content (str): The full script content used in code generation.
+
+    Returns:
+        Optional[str]: The regenerated Manim code or None if regeneration fails.
+    """
+    # Use the original prompt template from layer2
+    prompt_template = layer_definitions[1]["prompt_template"]
+    prompt = prompt_template.format(
+        title=prompt_data["title"],
+        content=prompt_data["content"],
+        full_script_content=full_script_content,
+        scene_class_name=prompt_data["scene_class_name"]
+    )
+    try:
+        new_code = await layer2.query_openai(prompt)
+        if new_code:
+            return new_code.strip()
+    except Exception as e:
+        logger.error(f"Error during code regeneration for {prompt_data['scene_class_name']}: {e}")
+    return None
 
 
 # -----------------------------
@@ -446,9 +411,6 @@ async def main():
     # -----------------------------
     # Path to the PDF file
     pdf_path = r"C:\Users\Ricardo\Downloads\sciadv.adm8470.pdf"
-
-    # Maximum chunk size based on API's max input size (in characters)
-    max_chunk_size = 8000  # Adjust this value as needed
 
     # Full script content where the generated Manim code snippets will be inserted
     full_script_content = """
@@ -478,14 +440,11 @@ Example:
     "content": "This section delves into the fundamentals of neural networks, exploring their architecture, training processes, and applications in various fields such as image recognition and natural language processing."
 }}
 """,
-            "model": "gpt-4o-mini",
-            "max_tokens": 2000,  # Reduced for summarization
-            "temperature": 0.0  # Deterministic output
         },
         # Layer 2: Manim Code Generation
         {
             "prompt_template": """
-Create a Manim Python code snippet to visualize the following content.
+Create a Manim Python code snippet to visualize the following content using advanced 3D visuals and complex animations to explain mathematical concepts.
 
 Title: {title}
 Content: {content}
@@ -495,43 +454,156 @@ Your code will be inserted into the following script structure:
 {full_script_content}
 
 Follow these specific instructions:
-1. **Manim Version Compatibility:** Use Manim v0.17.2 compatible syntax.
-2. **Scene Structure:** The code should define a single Scene class named {scene_class_name}Scene.
-3. **Imports:** Do not include from manim import * as it's already present in the full script.
-4. **Visual Complexity:**
-    - Incorporate advanced Manim features such as custom animations, complex mathematical objects, or interactive elements.
-    - Use multiple layers of animations to depict different aspects of the content simultaneously.
-    - Integrate transitions that seamlessly move between different visual representations.
-5. **Content Integration:**
-    - Ensure that each visual element directly relates to and enhances the understanding of the content.
-    - Avoid generic or filler animations; focus on conveying key concepts and insights.
-6. **Optimization:**
-    - Optimize for GPU usage by leveraging vector operations, minimizing object creation/destruction, and grouping similar operations.
-    - Ensure that the scene is efficient without compromising visual quality.
-7. **Structure and Readability:**
-    - Organize the code into well-structured methods within the Scene class for better readability and maintenance.
-    - Include comprehensive comments explaining the purpose and functionality of each major code block.
-8. **Performance:**
-    - Ensure that the scene duration is between 10 to 30 seconds.
-    - Optimize animations to prevent unnecessary rendering overhead.
-9. **Error Handling:**
-    - Include necessary error handling to manage potential runtime issues during scene rendering.
-11. Optimize for GPU usage:
-    - Use vector operations instead of loops where possible.
-    - Minimize creation and destruction of objects.
-    - Use GPU-accelerated functions when available (e.g., from mobject.py).
-    - Group similar operations together to minimize state changes.
 
-Important:
-- DO NOT include any markdown formatting, code block indicators (
-), or regex patterns in your response.
-- Provide ONLY the Python code for the scene class, without any additional explanation or formatting.
-- Begin the code with 'class {scene_class_name}Scene(Scene):' and end with the last line of the scene class.
-- Do not include any text before or after the class definition.
+1. **Manim Version Compatibility:**
+   - Use Manim v0.17.2 compatible syntax.
+
+2. **Scene Structure:**
+   - Define a single Scene class named `{scene_class_name}`, inheriting from `ThreeDScene` to enable 3D capabilities.
+   - Structure your code similarly to the `AttentionPatterns` class example provided, using modular methods and clear organization.
+   - Include methods like `setup_scene`, `add_title`, `present_concept`, `show_examples`, and `conclude_scene` to organize your code.
+
+   **Example:**
+
+   class {scene_class_name}(ThreeDScene):
+       def construct(self):
+           self.setup_scene()
+           self.add_title()
+           self.present_concept()
+           self.show_examples()
+           self.conclude_scene()
+
+       def setup_scene(self):
+           # Initialize variables and set up the scene
+           self.camera.background_color = DARK_GRAY
+           self.axes = ThreeDAxes()
+           self.set_camera_orientation(phi=75 * DEGREES, theta=-45 * DEGREES)
+           self.play(Create(self.axes))
+
+       def add_title(self):
+           # Add title and subtitle
+           title = Text("{{title}}", font_size=72)
+           title.to_edge(UP)
+           self.play(Write(title))
+           self.title = title
+
+       def present_concept(self):
+           # Present the main mathematical concept
+           pass  # Replace with your content
+
+       def show_examples(self):
+           # Show examples or applications
+           pass  # Replace with your content
+
+       def conclude_scene(self):
+           # Conclude the scene
+           conclusion = Text("Conclusion", font_size=64)
+           conclusion.to_edge(DOWN)
+           self.play(Write(conclusion))
+
+3. **Imports:**
+   - Do not include `from manim import *` as it's already present in the full script.
+   - Import any additional modules or classes needed for advanced features (e.g., `numpy`, `itertools`).
+
+   **Example:**
+
+   import numpy as np
+   from itertools import product
+
+4. **Visual Complexity and 3D Visuals:**
+   - Use 3D visuals extensively to create engaging and informative animations.
+   - Incorporate advanced Manim features such as custom animations, complex mathematical objects, interactive elements, and 3D transformations.
+   - Use multiple layers of animations to depict different aspects of the content simultaneously.
+   - Integrate transitions that seamlessly move between different visual representations.
+   - Utilize camera movements and rotations to enhance the 3D experience.
+
+   **Example of adding 3D visuals and camera movements:**
+
+   def present_concept(self):
+       # Example: Visualizing a 3D surface
+       surface = Surface(
+           lambda u, v: np.array([
+               u,
+               v,
+               np.sin(u) * np.cos(v)
+           ]),
+           u_range=[-PI, PI],
+           v_range=[-PI, PI],
+           resolution=(30, 30),
+           fill_opacity=0.8,
+           checkerboard_colors=[{{BLUE_D}}, {{BLUE_E}}],
+       )
+       self.play(Create(surface), run_time=3)
+       self.begin_ambient_camera_rotation(rate=0.2)
+       self.wait(5)
+       self.stop_ambient_camera_rotation()
+
+5. **Content Integration:**
+   - Ensure that each visual element directly relates to and enhances the understanding of the content.
+   - Use examples of mathematical objects and concepts to explain the content.
+   - Avoid generic or filler animations; focus on conveying key concepts and insights.
+
+   **Example of integrating content:**
+
+   def show_examples(self):
+       # Example: Demonstrating vector transformations
+       vector = Vector([2, 1, 0], color=YELLOW)
+       self.play(GrowArrow(vector))
+       matrix = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]
+       transformed_vector = vector.copy().apply_matrix(matrix)
+       self.play(Transform(vector, transformed_vector))
+       self.wait()
+
+6. **Structure and Readability:**
+   - Organize the code into well-structured methods within the Scene class for better readability and maintenance, similar to the `AttentionPatterns` class structure.
+   - Follow a consistent style emphasizing modularity and consistency.
+   - Include comprehensive comments explaining the purpose and functionality of each major code block.
+
+   **Example of adding comments:**
+
+   def setup_scene(self):
+       # Initialize the 3D axes and set the camera orientation
+       self.axes = ThreeDAxes()
+       self.set_camera_orientation(phi=60 * DEGREES, theta=30 * DEGREES)
+       self.play(Create(self.axes))
+
+7. **Optimization:**
+   - Optimize for GPU usage by leveraging vector operations, minimizing object creation/destruction, and grouping similar operations.
+   - Use GPU-accelerated functions when available.
+   - Ensure that the scene is efficient without compromising visual quality.
+
+   **Example of optimization:**
+
+   def create_particles(self):
+       # Create a group of particles using vectorized operations
+       particles = VGroup(*[
+           Sphere(radius=0.05).move_to([x, y, z])
+           for x, y, z in product(np.linspace(-2, 2, 10), repeat=3)
+       ])
+       particles.set_color(WHITE)
+       self.play(FadeIn(particles, lag_ratio=0.01))
+
+8. **Performance:**
+   - Ensure that the scene duration is between 10 to 30 seconds.
+   - Optimize animations to prevent unnecessary rendering overhead.
+
+9. **Error Handling:**
+   - Include necessary error handling to manage potential runtime issues during scene rendering.
+
+   **Example of error handling:**
+
+   def safe_create(self, mobject):
+       try:
+           self.play(Create(mobject))
+       except Exception as e:
+           print(f"An error occurred: {{{{e}}}}")
+
+10. **Important:**
+    - DO NOT include any markdown formatting, code block indicators, or regex patterns in your response.
+    - Provide ONLY the Python code for the Scene class, without any additional explanation or formatting.
+    - Begin the code with `class {scene_class_name}(ThreeDScene):` and end with the last line of the Scene class.
+    - Do not include any text before or after the class definition.
 """,
-            "model": "gpt-4o-mini",
-            "max_tokens": 16000,
-            "temperature": 0.7
         },
     ]
 
@@ -552,7 +624,7 @@ Important:
     # -----------------------------
     # Step 2: Prepare Inputs
     # -----------------------------
-    inputs = split_text(extracted_text, max_chunk_size)
+    inputs = split_text(extracted_text, MAX_CHUNK_SIZE)
     logger.info(f"📝 Text split into {len(inputs)} chunks.\n")
 
     # -----------------------------
@@ -568,32 +640,23 @@ Important:
     # Set OpenAI API key
     openai.api_key = openai_api_key
 
-    # Initialize Global Rate Limiter
-    global_limiter = AsyncLimiter(100, 60)  # 100 requests per 60 seconds
-
     # Initialize ModelPipeline
     pipeline = ModelPipeline()
 
     # Initialize Layer 1: Summarization
     layer1_def = layer_definitions[0]
+    global layer1  # Added this line to make layer1 accessible in other functions
     layer1 = ModelLayer(
         prompt_template=layer1_def["prompt_template"],
-        model=layer1_def["model"],
-        max_tokens=layer1_def["max_tokens"],
-        temperature=layer1_def["temperature"],
-        global_limiter=global_limiter
     )
     pipeline.add_layer(layer1)
     logger.info(f"🔗 Added Layer 1: Summarization")
 
     # Initialize Layer 2: Manim Code Generation
     layer2_def = layer_definitions[1]
+    global layer2  # Added this line to make layer2 accessible in other functions
     layer2 = ModelLayer(
         prompt_template=layer2_def["prompt_template"],
-        model=layer2_def["model"],
-        max_tokens=layer2_def["max_tokens"],
-        temperature=layer2_def["temperature"],
-        global_limiter=global_limiter
     )
     pipeline.add_layer(layer2)
     logger.info(f"🔗 Added Layer 2: Manim Code Generation")
@@ -671,7 +734,6 @@ Important:
                             "scene_class_name": scene_class_name
                         })
                         prompts.append(prompt)
-
                 else:
                     prompts = current_inputs  # For additional layers
 
@@ -711,14 +773,15 @@ Important:
             for i, snippet in enumerate(layer2.get_outputs()):
                 if snippet and snippet.strip():
                     try:
-                        # Remove regex-like patterns at the start and end of the snippet
-                        cleaned_snippet = re.sub(r'^\\w*\\n?|\\s*$', '', snippet.strip())
+                        # Strip leading/trailing whitespace
+                        cleaned_snippet = snippet.strip()
                         # Try to compile the snippet to check for syntax errors
                         compile(cleaned_snippet, f"<string{i}>", 'exec')
                         f.write(cleaned_snippet + "\n\n")
                     except SyntaxError as e:
                         logger.error(f"Syntax error in scene {i+1}: {e}")
                         logger.debug(f"Problematic snippet:\n{cleaned_snippet}")
+
         logger.info(f"📄 Manim Scene classes have been generated and inserted into '{output_file}'.")
     except Exception as e:
         logger.error(f"❌ Failed to write to '{output_file}': {e}")
@@ -728,7 +791,7 @@ Important:
     with open(output_file, 'r') as f:
         scene_content = f.read()
         logger.debug(scene_content)
-        scene_classes = re.findall(r'class (\w+Scene)\(Scene\):', scene_content)
+        scene_classes = re.findall(r'class (\w+)\(ThreeDScene\):', scene_content)
         logger.info(f"Found {len(scene_classes)} scene classes: {', '.join(scene_classes)}")
 
     # -----------------------------
@@ -738,13 +801,13 @@ Important:
         logger.info("Running Manim to generate video...")
         with open(output_file, 'r') as f:
             content = f.read()
-            scene_classes = re.findall(r'class (\w+Scene)\(Scene\):', content)
+            scene_classes = re.findall(r'class (\w+)\(ThreeDScene\):', content)
 
         if scene_classes:
-            successful_scenes = await run_manim_async(scene_classes, python_path, output_dir)
+            successful_scenes = await run_manim_async(scene_classes, python_path, output_dir, full_script_content)
             if successful_scenes:
                 logger.info(f"Videos generated for the following scenes: {', '.join(successful_scenes)}")
-                
+
                 # Check if video files exist and move them to the output directory
                 video_files = []
                 for root, dirs, files in os.walk("./manim_output/scenes/"):
@@ -771,7 +834,7 @@ Important:
 
                 if video_files:
                     final_output_file = os.path.join(os.getcwd(), "final_video.mp4")
-                    
+
                     logger.info("Combining videos...")
                     concat_file = os.path.join(output_dir, "concat_list.txt")
                     with open(concat_file, "w") as f:
@@ -808,17 +871,6 @@ Important:
     for file in os.listdir(output_dir):
         logger.debug(f"- {file}")
 
-    # Add this just before running Manim
-    logger.debug("Contents of generated_manim_scenes.py:")
-    with open(output_file, 'r') as f:
-        logger.debug(f.read())
-
-    # After the run_manim_async function call
-    logger.debug("Contents of ./manim_output/scenes/:")
-    for root, dirs, files in os.walk("./manim_output/scenes/"):
-        for file in files:
-            logger.debug(f"- {os.path.join(root, file)}")
-
     # Start GPU monitoring thread
     gpu_monitor_thread = threading.Thread(target=monitor_gpu_usage, daemon=True)
     gpu_monitor_thread.start()
@@ -831,6 +883,121 @@ Important:
     if os.path.exists(final_output_file):
         logger.info("Opening the final video...")
         webbrowser.open(f"file://{os.path.realpath(final_output_file)}")
+
+
+# -----------------------------
+# Updated run_manim_async Function
+# -----------------------------
+async def run_manim_async(scene_names, python_path, output_dir, full_script_content):
+    """
+    Asynchronously renders Manim scenes.
+
+    Args:
+        scene_names (List[str]): List of scene class names to render.
+        python_path (str): Path to the Python executable.
+        output_dir (str): Directory where the final video will be saved.
+        full_script_content (str): The full script content used in code generation.
+
+    Returns:
+        List[str]: Successfully rendered scene names.
+    """
+    successful_scenes = []
+
+    cuda_available = torch.cuda.is_available()
+    logger.info(f"CUDA is {'available' if cuda_available else 'not available'}")
+    if cuda_available:
+        logger.info(f"CUDA Device: {torch.cuda.get_device_name(0)}")
+
+    os.environ['CUDA_DEVICE'] = '0'
+
+    cpu_count = psutil.cpu_count(logical=False)
+    max_workers = max(1, int(cpu_count * 0.7))
+    logger.info(f"Using {max_workers} workers for rendering")
+
+    async def render_scene(queue):
+        while True:
+            scene_info = await queue.get()
+            scene = scene_info['scene_name']
+            prompt_data = scene_info.get('prompt_data', {})
+            for attempt in range(3):  # Try up to 3 times
+                try:
+                    command = (
+                        f"{python_path} -m manim -qm --format=mp4 --media_dir ./manim_output/scenes "
+                        f"--renderer=opengl --resolution=1280,720 generated_manim_scenes.py {scene}"
+                    )
+                    logger.debug(f"Executing command: {command}")
+                    process = await asyncio.create_subprocess_shell(
+                        command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env={**os.environ, 'CUDA_VISIBLE_DEVICES': '0', 'MANIM_USE_OPENGL_RENDERER': '1'}
+                    )
+                    stdout, stderr = await process.communicate()
+                    if process.returncode == 0:
+                        logger.info(f"Manim command completed successfully for {scene}")
+                        successful_scenes.append(scene)
+                        break  # Exit the retry loop if successful
+                    else:
+                        stderr_decoded = stderr.decode()
+                        logger.error(f"Error running Manim for scene {scene}: {stderr_decoded}")
+                        if "ModuleNotFoundError: No module named" in stderr_decoded:
+                            missing_module = re.search(r"No module named '([^']+)'", stderr_decoded)
+                            if missing_module:
+                                module_name = missing_module.group(1)
+                                logger.info(f"Attempting to install missing module '{module_name}'")
+                                install_command = f"{python_path} -m pip install {module_name}"
+                                try:
+                                    subprocess.run(install_command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                    logger.info(f"Successfully installed '{module_name}'. Retrying rendering...")
+                                    continue  # Retry rendering after installing the module
+                                except subprocess.CalledProcessError as e:
+                                    logger.error(f"Failed to install module '{module_name}': {e.stderr.decode()}")
+                        if attempt < 2:
+                            if attempt == 1:
+                                # Regenerate the Manim code for this scene
+                                logger.warning(f"Rendering failed for {scene}. Regenerating code...")
+                                new_code = await regenerate_scene_code(prompt_data, full_script_content)
+                                if new_code:
+                                    update_scene_in_generated_file(scene, new_code)
+                                    logger.info(f"Regenerated code for {scene}. Retrying rendering...")
+                                    continue  # Retry rendering with the new code
+                            logger.warning(f"Rendering failed for {scene}. Retrying... (Attempt {attempt + 1}/3)")
+                        else:
+                            logger.error(f"Failed to render {scene} after 3 attempts. Skipping.")
+                    # Wait a bit before retrying
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    logger.error(f"Exception occurred while rendering {scene}: {str(e)}")
+            queue.task_done()
+
+    queue = Queue()
+    for scene_name in scene_names:
+        # Retrieve prompt data for regeneration if needed
+        prompt_data = {
+            "title": scene_name.replace("Scene", "").replace("_", " "),
+            "content": "",  # You can store the content used for the original generation
+            "full_script_content": full_script_content,
+            "scene_class_name": scene_name
+        }
+        await queue.put({"scene_name": scene_name, "prompt_data": prompt_data})
+
+    workers = [asyncio.create_task(render_scene(queue)) for _ in range(max_workers)]
+
+    with tqdm(total=len(scene_names), desc="Generating Manim scenes", unit="scene") as pbar:
+        while not queue.empty():
+            await asyncio.sleep(0.1)
+            completed = len(scene_names) - queue.qsize()
+            pbar.n = completed
+            pbar.refresh()
+
+    await queue.join()
+
+    for worker in workers:
+        worker.cancel()
+
+    await asyncio.gather(*workers, return_exceptions=True)
+
+    return successful_scenes
 
 
 # -----------------------------
